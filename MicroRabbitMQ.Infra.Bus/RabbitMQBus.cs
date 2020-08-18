@@ -7,6 +7,7 @@ using MediatR;
 using MicroRabbitMQ.Domain.Core.Bus;
 using MicroRabbitMQ.Domain.Core.Commands;
 using MicroRabbitMQ.Domain.Core.Events;
+using Microsoft.Extensions.DependencyInjection;
 using Newtonsoft.Json;
 using RabbitMQ.Client;
 using RabbitMQ.Client.Events;
@@ -18,10 +19,12 @@ namespace MicroRabbitMQ.Infra.Bus
         private readonly IMediator _mediator;
         private readonly Dictionary<string, List<Type>> _handlers;
         private readonly List<Type> _eventTypes;
+        private readonly IServiceScopeFactory _serviceScopeFactory;
 
-        public RabbitMQBus(IMediator mediator)
+        public RabbitMQBus(IMediator mediator, IServiceScopeFactory serviceScopeFactory)
         {
             _mediator = mediator;
+            _serviceScopeFactory = serviceScopeFactory;
 
             _handlers = new Dictionary<string, List<Type>>();
             _eventTypes = new List<Type>();
@@ -108,6 +111,31 @@ namespace MicroRabbitMQ.Infra.Bus
         }
 
         private async Task ProccessEvent(string eventName, string message)
+        {
+            if (_handlers.ContainsKey(eventName))
+            {
+                using(var scope = _serviceScopeFactory.CreateScope())
+                {
+                    var subscriptions = _handlers[eventName];
+                    foreach (var subscription in subscriptions)
+                    {
+                        var handler = scope.ServiceProvider.GetService(subscription);
+                        if (handler == null)
+                            continue;
+
+                        var eventType = _eventTypes.SingleOrDefault(t => t.Name == eventName);
+                        var @event = JsonConvert.DeserializeObject(message, eventType);
+
+                        var concretType = typeof(IEventHandler<>).MakeGenericType(eventType);
+
+                        await (Task)concretType.GetMethod("Handle").Invoke(handler, new object[] { @event });
+                    }
+                }
+
+              }
+        }
+
+        private async Task ProccessEventV2(string eventName, string message)
         {
             if (_handlers.ContainsKey(eventName))
             {
